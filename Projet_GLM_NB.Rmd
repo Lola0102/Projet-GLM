@@ -1,0 +1,762 @@
+---
+title: "Modèle linéaire généralisé et Choix de modèles"
+author: "Natacha BABALOLA."
+date: "2023-07-01"
+output:
+  html_document:
+    toc: yes
+    number_sections: yes
+  word_document: 
+    toc: yes
+    fig_width: 8
+    fig_caption: yes
+  pdf_document:
+    toc: yes
+    fig_caption: yes
+    number_sections: yes
+---
+
+**Météo à Bâle**
+
+Le fichier meteo.train.csv contient des données sur les conditions métérologiques à Bâle (Suisse). Chaque ligne correspond à un jour entre 2010 et 2018. Les colonnes correspondent aux valeurs moyenne, minimale et maximale sur la journée de :
+
+* Température (°C)
+* Humidite relative (pourcentage)
+* Pression (hPa)
+* Nébulosité (pourcentage)
+* Nébulosité forte, moyenne et faible
+* Vitesse (en km/h) et direction (en degrés) du vent à 10 m d’altitude, 80 m d’altitude, et à
+l’altitude où la pression vaut 900 hPa
+* Rafales de vent à 10 m
+
+ainsi qu’aux valeurs totales sur la journée de :
+
+* Précipitations (mm)
+* Neige (cm)
+* Minutes d’ensoleillement
+* Rayonnement solaire (W/m2)
+
+On cherche à prédire s’il pleuvra le lendemain (colonne pluie.demain). Pour cette variable d’intérêt :
+
+  + proposer et valider un modèle ;
+  + proposer une prédiction binaire pour les lendemains des journées incluses dans le fichier meteo.test.csv. 
+
+Source des données : MeteoBlue.
+
+
+# Import des données
+
+## Chargement des données Train et Test
+
+
+
+
+
+```{r, echo=FALSE, include=FALSE, warning=FALSE}
+library(readr)
+require(MASS)
+library(ggplot2)
+library(corrplot)
+library(ROCR)
+library(knitr)
+library(caret)
+#tinytex::reinstall_tinytex(repository = "illinois")
+```
+
+
+```{r, echo=FALSE, include=FALSE}
+train = read_csv("~/Documents/Modèle Lineaire Generalise/Projet/meteo.train.csv")
+test = read_csv("~/Documents/Modèle Lineaire Generalise/Projet/meteo.test.csv")
+attach(train)
+#attach(test)
+#View(train)
+#View(test)
+```
+
+```{r, echo=FALSE}
+train = train[-1]
+#View(train)
+```
+
+
+Présentation des 1ères ligne de notre base d'entrainement
+
+```{r, echo=FALSE}
+train = train[,c(46,1:45 )]
+print(head(train))
+```
+
+
+
+```{r, echo=FALSE}
+print(str(head(train)))
+```
+
+
+
+```{r, echo=FALSE}
+library(skimr)
+#print(skim(train))
+```
+Nous retrouvons pour chacune des covariables, le nombre de valeurs manquantes, la moyenne et d'autre données statistiques comme les différents quartiles.
+
+
+# Analyse descriptive des variables
+
+## Analyse de la varible réponse : Ici **pluie.demain**
+
+
+```{r, echo=FALSE}
+table(pluie.demain)
+``` 
+
+Recherche des Valeurs Manquantes 
+ 
+```{r }
+which(is.na(train), arr.ind = TRUE)
+```
+
+Nous n'avons aucune données manquantes dans notre base d'entrainement.
+
+
+
+```{r, echo=FALSE}
+pluie.demain = as.factor(train$pluie.demain)
+#pluie.demain = as.integer(train$pluie.demain)
+#class(pluie.demain)
+#par(mfrow = c(2,2))
+#plot(pluie.demain, col = "magenta")
+plot(table(pluie.demain), main= "Histogramme des lendemains de pluie", col = "blue", lwd=50,type="h",lend="butt",ylab="", ylim = c(0,1000), xlim = c(0, 3))
+```
+
+La variable réponse qui nous indique s'il pleut le lendemain dispose ici d'autant de résultats Vrai et Faux.
+
+
+
+```{r, echo=FALSE}
+ggplot(train, aes(x=pluie.demain, y=Temperature.daily.mean..2.m.above.gnd., fill=pluie.demain, colour=pluie.demain))+
+   geom_boxplot(alpha=0.5, outlier.alpha=0)+
+   geom_jitter() 
+```
+
+
+Le nombre de réalisation ou pas de pluie le lendemain en fonction de la température moyenne. Nous remarquons qu'avec des températures eleve la veille, les chances qu'ils pleuve le lendemain sont plus grande.
+
+
+## Test de corrélation entre nos covariables
+
+```{r, echo=FALSE}
+corrplot(cor(train[,10:20 ], use="complete"))
+```
+
+
+Un leger zoom sur les données portant une part de colinéarité élevée.
+
+
+
+```{r, echo=FALSE}
+corrplot(cor(train[,12:18 ], use="complete"))
+```
+
+
+
+Nous observons que nos données sont fortement correlé pour la plupart d'entre elles.
+
+
+
+
+
+
+
+
+# Modelisation 
+
+**GLM sur la base d'entrainement**
+
+
+## Premier modèle
+
+**modele1 contenant toutes les variables explicatives**
+
+```{r }
+modele1 <- glm(pluie.demain ~ ., data = train, family = binomial)
+summary(modele1)
+```
+
+Suite à cette première regression, notre modèle présente 7 variables significative à savoir : 
+
+* L'année d'observation
+* Le niveau de Pression moyen de la mer
+* La direction moyenne du vent où la pression vaut 900 hPa
+* Le Max du niveau de Pression moyen de la mer
+* Le min du niveau de Pression moyen de la mer
+* Le Max du niveau de couverture nuageuse moyenne
+* Le min du niveau de Vitesse quotidienne moyenne à 10M d'altitude.
+
+
+
+### Qualité d'ajustement du modèle complet
+
+```{r, echo=FALSE, include=FALSE}
+# Chargement des bibliothèques
+library(caret)
+
+# Conversion de la colonne "pluie.demain" en facteur
+train$pluie.demain = as.factor(train$pluie.demain)
+
+# Définition du contrôle de validation croisée
+ctrl = trainControl(method = "cv", number = 5)  # Utilisez le nombre de plis souhaité
+
+# Ajustement du modèle avec validation croisée
+model = train(pluie.demain ~ ., data = train, method = "glm", family = binomial, trControl = ctrl)
+
+```
+
+
+
+```{r, echo=FALSE}
+# Affichage des métriques de performance de la validation croisée
+kable(print(model))
+```
+
+Le résultat obtenu est un résumé des performances de notre modèle de régression linéaire généralisée à partir de la validation croisée à 5 plis.
+
+* Il y a 1180 observations (échantillons) dans votre ensemble de données d'entraînement.
+* 46 variables explicatives (prédicteurs) dans votre modèle.
+* 2 classes: 
+$FALSE$, $TRUE$ : 
+La variable de sortie (pluie.demain) présente deux classes, "FALSE" (faux) et "TRUE" (vrai).
+
+En ce qui concerne la section "Resampling results", les mesures de performance obtenues pour la validation croisée sont les suivantes :
+
+* L'exactitude est la proportion de prédictions correctes par rapport à l'ensemble des prédictions. Dans notre cas, l'exactitude moyenne de votre modèle est de 0.7136291, soit environ **71.36%**.
+* Le kappa est une mesure de concordance qui tient compte de l'exactitude due au hasard. Une valeur de kappa de 1 indique une concordance parfaite entre les prédictions et les vraies valeurs, tandis qu'une valeur de 0 indique une concordance due au hasard. Dans votre cas, la valeur de kappa moyenne de votre modèle est de **0.4267671**.
+
+Ces mesures nous donnent une indication de la performance de notre modèle de régression linéaire généralisée lors de la validation croisée à 5 plis. Cependant, il est important de noter que ces résultats sont spécifiques à nos données d'entraînement et ne garantissent pas la performance sur de nouvelles données réelles.
+
+
+
+
+## Deuxième modèle 
+
+**modele2 contenant uniquement les variables explicatives significatives**
+
+```{r, echo=FALSE}
+modele2 <- glm(pluie.demain ~ Year + Mean.Sea.Level.Pressure.daily.mean..MSL. + Wind.Direction.daily.mean..900.mb. + Mean.Sea.Level.Pressure.daily.max..MSL. +  Mean.Sea.Level.Pressure.daily.min..MSL. + Medium.Cloud.Cover.daily.max..mid.cld.lay. + Wind.Speed.daily.min..10.m.above.gnd., data = train, family = binomial)
+summary(modele2)
+```
+
+Notre deuxième modèle nous présente les 6 variables significatives. Poursuivons les tests en gardant que ces variables.
+
+
+## Troisième modèle
+
+**modele3 contenant uniquement les 5 variables explicatives significatives**
+
+```{r, echo=FALSE}
+modele3 <- glm(pluie.demain ~ Year + Mean.Sea.Level.Pressure.daily.mean..MSL. + Wind.Direction.daily.mean..900.mb. + Mean.Sea.Level.Pressure.daily.max..MSL. +  Mean.Sea.Level.Pressure.daily.min..MSL. + Medium.Cloud.Cover.daily.max..mid.cld.lay. , data = train, family = binomial)
+summary(modele3)
+```
+Notre variable Année devient plus de plus en plus significative. Denière tentative avec un modèle sans l'année.
+
+
+## Quatrième modèle
+
+**modele4 contenant uniquement les 5 variables explicatives significatives**
+
+```{r, echo=FALSE}
+modele4 <- glm(pluie.demain ~ Mean.Sea.Level.Pressure.daily.mean..MSL. + Wind.Direction.daily.mean..900.mb. + Mean.Sea.Level.Pressure.daily.max..MSL. +  Mean.Sea.Level.Pressure.daily.min..MSL. + Medium.Cloud.Cover.daily.max..mid.cld.lay. , data = train, family = binomial)
+summary(modele4)
+```
+
+### Qualité d'ajustement du modèle 
+
+```{r, echo=FALSE, include=FALSE, warning=FALSE, message=FALSE}
+# Chargement des bibliothèques
+library(caret)
+
+# Conversion de la colonne "pluie.demain" en facteur
+train$pluie.demain = as.factor(train$pluie.demain)
+
+# Définition du contrôle de validation croisée
+ctrl = trainControl(method = "cv", number = 5)  # Utilisez le nombre de plis souhaité
+
+# Ajustement du modèle avec validation croisée
+model = train(pluie.demain ~ Mean.Sea.Level.Pressure.daily.mean..MSL. + Wind.Direction.daily.mean..900.mb. + Mean.Sea.Level.Pressure.daily.max..MSL. +  Mean.Sea.Level.Pressure.daily.min..MSL. + Medium.Cloud.Cover.daily.max..mid.cld.lay. , data = train, method = "glm", family = binomial, trControl = ctrl)
+```
+
+
+```{r, echo=FALSE}
+# Affichage des métriques de performance de la validation croisée
+print(model)
+```
+
+
+
+les mesures de performance obtenues pour la validation croisée sont les suivantes :
+
+* L'exactitude est la proportion de prédictions correctes par rapport à l'ensemble des prédictions. Dans notre cas, l'exactitude moyenne de votre modèle est de 0.7136291, soit environ ** % **.
+* Le kappa est une mesure de concordance qui tient compte de l'exactitude due au hasard. Une valeur de kappa de 1 indique une concordance parfaite entre les prédictions et les vraies valeurs, tandis qu'une valeur de 0 indique une concordance due au hasard. Dans votre cas, la valeur de kappa moyenne de votre modèle est de ** **.
+
+Ces mesures nous donnent une indication de la performance de notre modèle de régression linéaire généralisée lors de la validation croisée à 5 plis. Cependant, il est important de noter que ces résultats sont spécifiques à nos données d'entraînement et ne garantissent pas la performance sur de nouvelles données réelles.
+
+
+
+## Conclusion 1
+
+Comparaison des AIC en fonction de nos différent modèles
+
+* Pour le modèle complet, M1, nous avons un AIC = AIC: 1320.7
+* Pour le modèle 2 , AIC = AIC: 1333
+* Pour le modèle 3 , AIC = AIC: 1333.1
+* Pour le modèle 4 , AIC = AIC: 1334.8
+
+Nous remarquons un gain d'AIC lorsque notre modèle devient de plus en plus réduit. 
+
+
+
+A ce stade, notre choix se tourne vers le modèle 4. 
+
+
+
+Dernière comparaison en prenant en compte la regression réalisé par R et l'analyse de son meilleur modèle au sens du critère AIC
+
+## Regression selon R
+
+
+```{r, echo=FALSE, include=FALSE}
+modeleR = stepAIC(modele1, data = train, family = binomial)
+```
+
+
+```{r, echo=FALSE}
+print(summary(modeleR))
+```
+Le modèle qu'il propose au final Call:
+
+*glm(formula = pluie.demain ~ Year + Temperature.daily.mean..2.m.above.gnd. + 
+    Mean.Sea.Level.Pressure.daily.mean..MSL. + Snowfall.amount.raw.daily.sum..sfc. + 
+    Medium.Cloud.Cover.daily.mean..mid.cld.lay. + Wind.Speed.daily.mean..80.m.above.gnd. + 
+    Wind.Direction.daily.mean..80.m.above.gnd. + Wind.Direction.daily.mean..900.mb. + 
+    Temperature.daily.min..2.m.above.gnd. + Mean.Sea.Level.Pressure.daily.max..MSL. + 
+    Mean.Sea.Level.Pressure.daily.min..MSL. + Total.Cloud.Cover.daily.max..sfc. + 
+    Total.Cloud.Cover.daily.min..sfc. + Medium.Cloud.Cover.daily.max..mid.cld.lay. + 
+    Wind.Speed.daily.max..10.m.above.gnd. + Wind.Speed.daily.min..10.m.above.gnd. + 
+    Wind.Gust.daily.max..sfc., family = binomial, data = train)* 
+    
+retient plus de variables que le notre. Nous le gardons en mémoire pour la suite des tests. 
+
+### Qualité d'ajustement du modèle complet
+
+```{r, echo=FALSE, include=FALSE, warning=FALSE, message=FALSE}
+# Chargement des bibliothèques
+library(caret)
+
+# Conversion de la colonne "pluie.demain" en facteur
+train$pluie.demain = as.factor(train$pluie.demain)
+
+# Définition du contrôle de validation croisée
+ctrl = trainControl(method = "cv", number = 5)  # Utilisez le nombre de plis souhaité
+
+# Ajustement du modèle avec validation croisée
+model = train(pluie.demain ~ Year + Temperature.daily.mean..2.m.above.gnd. + 
+    Mean.Sea.Level.Pressure.daily.mean..MSL. + Snowfall.amount.raw.daily.sum..sfc. + 
+    Medium.Cloud.Cover.daily.mean..mid.cld.lay. + Wind.Speed.daily.mean..80.m.above.gnd. + 
+    Wind.Direction.daily.mean..80.m.above.gnd. + Wind.Direction.daily.mean..900.mb. + 
+    Temperature.daily.min..2.m.above.gnd. + Mean.Sea.Level.Pressure.daily.max..MSL. + 
+    Mean.Sea.Level.Pressure.daily.min..MSL. + Total.Cloud.Cover.daily.max..sfc. + 
+    Total.Cloud.Cover.daily.min..sfc. + Medium.Cloud.Cover.daily.max..mid.cld.lay. + 
+    Wind.Speed.daily.max..10.m.above.gnd. + Wind.Speed.daily.min..10.m.above.gnd. + 
+    Wind.Gust.daily.max..sfc., data = train, family = binomial, method = "glm", trControl = ctrl)
+```
+
+
+
+```{r, echo=FALSE}
+# Affichage des métriques de performance de la validation croisée
+print(model)
+```
+
+
+les mesures de performance obtenues pour la validation croisée sont les suivantes :
+
+* L'exactitude est la proportion de prédictions correctes par rapport à l'ensemble des prédictions. Dans notre cas, l'exactitude moyenne de votre modèle est de 0.7136291, soit environ ** % **.
+* Le kappa est une mesure de concordance qui tient compte de l'exactitude due au hasard. Une valeur de kappa de 1 indique une concordance parfaite entre les prédictions et les vraies valeurs, tandis qu'une valeur de 0 indique une concordance due au hasard. Dans votre cas, la valeur de kappa moyenne de votre modèle est de ** **.
+
+Ces mesures nous donnent une indication de la performance de notre modèle de régression linéaire généralisée lors de la validation croisée à 5 plis. Cependant, il est important de noter que ces résultats sont spécifiques à nos données d'entraînement et ne garantissent pas la performance sur de nouvelles données réelles.
+
+
+
+
+## Anova 
+
+```{r }
+#ANOVA
+anova(modele4, modeleR, test = "LRT")
+```
+
+
+Le modèleR nous propose une meilleur déviance que celui obtenue par notre modele4, c'est à dire un écart entre les valeurs observées $y_i$ et $n_i$ − $y_i$ et les valeurs estimées $µˆi$ et $n_i$ − $µˆi$ où où $y_i$ est la valeur observée et $µˆi$
+la valeur prédite pour l’observation $i$.
+
+
+
+## Conclusion 2
+
+Analysons l'algorithmique faite par R: Dans le modèle de base, AIC = 1334.8 Il rajoute des variables explicatives en plus de nos 4 variables clés et calcule l'AIC par ordre croissant des variables introduites: AIC= 1282.8; c'est le meilleur modèle selon R au sens de l'AIC mais pas forcément meilleur au notre. Au vu des résultats obtenues suites aux comparaisons des AIC, de la qualité de l'ajustement des différents modèles, notre choix de modèle est porté sur le modèle4 obtenu par nos soins. Nous réaliserons néanmoins les prédictions sur quelques modèles clés en plus et cela à titre comparatif.
+
+
+# Prédiction sur la base Test
+
+## Initialisation de notre base test
+```{r }
+test = test[-1]
+```
+Notre base test contient 290 données et 46 covariables.
+
+```{r }
+print(head(test))
+```
+
+
+**Test de prédictions sur nos différents modèles**
+
+## Modèle M1 
+
+
+$modele1 = glm(pluie.demain ~ ., data = train, family = binomial)$
+
+```{r, echo=FALSE, include=FALSE}
+pred1 = predict(modele1, newdata = test, type="response")
+print(head(pred1))
+```
+
+
+```{r, echo=FALSE}
+head(pred1)
+summary(pred1)
+```
+
+
+### Seuil de prédictions
+
+$\alpha$ = 0.5 selon un ratio obtenue via les résultats de la base train $\frac{Vrai}{Vrai+Faux}$) 
+
+
+```{r }
+test_predictions1 = ifelse(pred1 >= 0.5, "Vrai", "Faux")
+
+# Ajout des prédictions à la colonne "test" de l'ensemble de données de test
+test$predictions1 = test_predictions1
+head(test_predictions1)
+```
+
+
+
+```{r, echo=FALSE}
+table(test_predictions1)
+```
+
+ratio de prédiction "Vrai" et "Faux"
+
+
+
+
+### Matrice de confusion
+
+```{r, echo=FALSE}
+# Création de la matrice de confusion
+confusion_matrix = table(test_predictions1, test$predictions1)
+print(confusion_matrix)
+```
+Ne disposant pas de Vrai données sur notre base de test, la matrice de confusion de nous apporte pas d'informations supplémentaires à exploiter.
+
+### Calcul de l'exactitude
+
+```{r, echo=FALSE}
+accuracy <- sum(diag(confusion_matrix)) / sum(confusion_matrix)
+print(paste("Exactitude:", accuracy))
+
+```
+
+
+
+
+
+## Modèle M4 
+
+$modele4 <- glm(pluie.demain ~ Mean.Sea.Level.Pressure.daily.mean..MSL. + Wind.Direction.daily.mean..900.mb. + Mean.Sea.Level.Pressure.daily.max..MSL. +  Mean.Sea.Level.Pressure.daily.min..MSL. + Medium.Cloud.Cover.daily.max..mid.cld.lay. , data = train, family = binomial)$
+
+```{r, echo=FALSE , include=FALSE}
+pred4 = predict(modele4, newdata = test, type="response")
+pred4
+```
+
+
+
+### Seuil de prédictions 1
+```{r }
+test_predictions4 = ifelse(pred4 >= 0.5, "Vrai", "Faux")
+
+# Ajout des prédictions à la colonne "test" de l'ensemble de données de test
+test$predictions4 = test_predictions4
+head(test_predictions4)
+
+```
+
+
+```{r}
+table(test_predictions4)
+```
+
+
+
+### Seuil de prédictions 2
+```{r, echo=FALSE}
+test_predictions4_2 = ifelse(pred4 >= 0.6, "Vrai", "Faux")
+
+# Ajout des prédictions à la colonne "test" de l'ensemble de données de test
+test$predictions4_2 = test_predictions4_2
+head(test_predictions4_2)
+
+```
+
+
+
+```{r}
+table(test_predictions4_2)
+```
+En faisant varier la valeur du seuil, nos prédictions de Vrai et Faux à la question de savoir s'il va pleuvoir demain ou pas j'ajuste considérablement.
+
+
+### Seuil de prédictions 3
+
+```{r, echo=FALSE}
+test_predictions4_3 = ifelse(pred4 >= 0.4, "Vrai", "Faux")
+
+# Ajout des prédictions à la colonne "test" de l'ensemble de données de test
+test$predictions4_3 = test_predictions4_3
+head(test_predictions4_3)
+
+```
+
+
+```{r}
+table(test_predictions4_3)
+```
+
+En faisant varier la valeur du seuil, nos prédictions de Vrai et Faux à la question de savoir s'il va pleuvoir demain ou pas j'ajuste considérablement.
+
+
+
+### Calcul de l'exactitude
+
+```{r, echo=FALSE}
+accuracy <- sum(diag(confusion_matrix)) / sum(confusion_matrix)
+print(paste("Exactitude:", accuracy))
+
+```
+
+
+
+
+## Modèle MR 
+$modeleR = stepAIC(modele1, data = train, family = binomial)$
+
+```{r, echo=FALSE, include=FALSE}
+predR = predict(modeleR, newdata = test, type="response")
+predR
+```
+
+
+
+
+### Seuil de prédictions 
+
+$\alpha$ = 0.5 selon un ratio obtenue via les résultats de la base train $\frac{Vrai}{Vrai+Faux}$) 
+
+```{r, echo=FALSE}
+test_predictionsR = ifelse(predR >= 0.5, "Vrai", "Faux")
+
+# Ajout des prédictions à la colonne "test" de l'ensemble de données de test
+test$predictionsR = test_predictionsR
+head(test_predictionsR)
+
+```
+
+
+
+```{r, echo=FALSE}
+table(test_predictionsR)
+```
+
+
+
+### Seuil de prédictions 2
+```{r, echo=FALSE}
+test_predictionsR_2 = ifelse(predR >= 0.6, "Vrai", "Faux")
+
+# Ajout des prédictions à la colonne "test" de l'ensemble de données de test
+test$predictionsR_2 = test_predictionsR_2
+head(test_predictionsR_2)
+
+```
+
+
+
+```{r}
+table(test_predictionsR_2)
+```
+En faisant varier la valeur du seuil, nos prédictions de Vrai et Faux à la question de savoir s'il va pleuvoir demain ou pas j'ajuste considérablement.
+
+
+### Seuil de prédictions 3
+
+```{r, echo=FALSE}
+test_predictionsR_3 = ifelse(pred4 >= 0.4, "Vrai", "Faux")
+
+# Ajout des prédictions à la colonne "test" de l'ensemble de données de test
+test$predictionsR_3 = test_predictionsR_3
+head(test_predictionsR_3)
+
+```
+
+
+```{r}
+table(test_predictionsR_3)
+```
+
+En faisant varier la valeur du seuil, nos prédictions de Vrai et Faux à la question de savoir s'il va pleuvoir demain ou pas j'ajuste considérablement.
+
+
+
+
+### Calcul de l'exactitude
+
+```{r, echo=FALSE}
+accuracy <- sum(diag(confusion_matrix)) / sum(confusion_matrix)
+print(paste("Exactitude:", accuracy))
+
+```
+
+
+
+
+## Courbe de ROC
+
+```{r, echo=FALSE, include=FALSE}
+pred4 = predict(modele4, newdata = test, type="response")
+print(head(pred4))
+```
+
+
+**Coder la cible en O et 1**
+```{r }
+y = ifelse(test$predictions4 == "Vrai", 1, 0)
+print(table(test$predictions4,y))
+```
+On a : 1 si le résultat est Vrai et 0 si le résultat est Faux.
+
+
+**Nbre de positif**
+**Nbre de négatif**
+```{r , echo=FALSE}
+npos = sum(y)
+print(npos)
+
+nneg = sum(1-y)
+print(nneg)
+```
+
+
+
+**Création d'un dataframe avec y et les scores de prédictions**
+
+```{r, echo=FALSE}
+df = data.frame(y,pred4)
+print(head(df))
+```
+
+
+**Trier la dataframe avec les scores décroissants**
+
+```{r, echo=FALSE}
+dfSorted = df[order(pred4, decreasing = TRUE),]
+# Première ligne
+print(head(dfSorted))
+```
+Ici les premières lignes de la dataframe
+
+
+
+
+```{r, echo=FALSE}
+print(tail(dfSorted))
+```
+
+Ici les dernières lignes de la dataframe crrée.
+
+
+
+**Taux de faux positifs**
+
+```{r, echo=FALSE}
+tfp = cumsum(1-dfSorted$y)/nneg
+print(head(tfp))
+```
+
+
+**Taux de vrais positifs**
+
+```{r, echo=FALSE}
+#Taux de vrais positifs
+tvp = cumsum(dfSorted$y)/npos
+print(head(tvp))
+```
+
+
+
+```{r, echo=FALSE,include=FALSE, warning=FALSE}
+# Courbe de ROC puis ajout de la diagonale
+#plot(tfp, tvp, main = "Courbe de ROC", type= "l", col = "blue")
+#abline(a=0, b=1)
+```
+
+
+
+```{r }
+library(ROCR)
+pred_roc = ROCR::prediction(pred4,test$predictionsR)
+print(pred_roc)
+```
+
+
+
+```{r, echo=FALSE, include=FALSE}
+#Résultats détaillé
+attributes(pred_roc)
+```
+
+
+
+**Mesure de la performance de l'objet**
+```{r }
+grph_roc = ROCR::performance(pred_roc, measure = "tpr", x.measure ="fpr")
+print(grph_roc)
+```
+
+**Graphique Courbe ROC**
+
+```{r }
+ROCR::plot(grph_roc, xlab = "Taux de Faux Positifs", ylab = "Taux de Vrais Positif", col = "pink", main = "Courbe de ROC")
+abline(a=0, b=1)
+```
+
+Notre courbe de ROC est assez satisfaisante, car elle nous montre le taux de vraix positifs en fonction du taux de faux positifs. Notre courbe est considérablement éloignée de la diagonale et à une allure correcte.
+Nous ne pouvons réaliser et mésurer la qualité de prédiction sur les données tests car nous ne disposons pas des Vrais données et celles obtenues dans la base de test sont celles prédites grâce à notre modèle M4.
+
+
+##Export du fichier csv contenant les prédictions
+```{r }
+write.table(test,"monfichier_de_prédiction.csv",sep=";",row.names=FALSE)
+```
